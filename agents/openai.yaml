@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clodex Loop"
+  short_description: "Codex builds; Claude adversarially reviews"
+  default_prompt: "Use $clodex-loop to plan and implement this with Claude providing bounded adversarial reviews."
