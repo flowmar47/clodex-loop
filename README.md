@@ -34,7 +34,13 @@ Plain browser ChatGPT without local tools cannot orchestrate the Claude CLI.
 
 ## Install
 
-Clone the repository into the skills directory recognized by your Codex installation. This local release was verified with `~/.codex/skills`; use your configured location if it differs:
+For a shared installation across supported agent harnesses, use the skills installer:
+
+```bash
+npx skills add https://github.com/flowmar47/clodex-loop --global --all
+```
+
+For a manual Codex-only installation, clone the repository into Codex's skill directory:
 
 ```bash
 git clone https://github.com/flowmar47/clodex-loop.git ~/.codex/skills/clodex-loop
@@ -50,6 +56,12 @@ python3 scripts/claude_review.py doctor
 ```
 
 The doctor reports a sanitized CLI basename plus authentication-method, subscription, and required-flag status. It does not print credentials or the resolved executable path.
+
+Run the local regression suite without invoking Claude:
+
+```bash
+python3 scripts/test_clodex.py -v
+```
 
 ## Use
 
@@ -88,6 +100,8 @@ references/plan-review-prompt.md      Claude plan-review contract
 references/code-review-prompt.md      Claude code-review contract
 scripts/build_review_packet.py        Bounded packet builder and redactor
 scripts/claude_review.py              Claude CLI doctor/session runner
+scripts/test_clodex.py                Standard-library regression suite
+.github/workflows/test.yml            Push and pull-request regression check
 ```
 
 Runtime dependencies are Python's standard library. The scripts refuse unsafe path forms, oversized packets, missing exact verdicts, unexpected session IDs, and evidence overwrites.

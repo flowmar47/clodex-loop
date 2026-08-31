@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -234,10 +235,71 @@ def load_state(path: Path) -> dict[str, Any]:
         raise RuntimeError(f"invalid review state {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise RuntimeError(f"invalid review state object: {path}")
+    required_fields = (
+        "repo",
+        "repo_read",
+        "rounds",
+        "model_argument",
+        "max_budget_usd",
+        "started_at",
+    )
+    missing = [field for field in required_fields if field not in payload]
+    if missing:
+        raise RuntimeError(
+            f"review state missing required field {missing[0]}: {path}"
+        )
     try:
-        uuid.UUID(str(payload["session_id"]))
+        session_id = payload["session_id"]
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id is not a non-empty string")
+        uuid.UUID(session_id)
     except (KeyError, ValueError) as exc:
         raise RuntimeError(f"review state has no valid session_id: {path}") from exc
+
+    repo = payload["repo"]
+    if (
+        not isinstance(repo, str)
+        or not repo.strip()
+        or "\0" in repo
+        or not Path(repo).is_absolute()
+    ):
+        raise RuntimeError(f"review state has invalid repo: {path}")
+    if not isinstance(payload["repo_read"], bool):
+        raise RuntimeError(f"review state has invalid repo_read: {path}")
+
+    rounds = payload["rounds"]
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1:
+        raise RuntimeError(f"review state has invalid rounds: {path}")
+
+    model = payload["model_argument"]
+    if model is not None and (
+        not isinstance(model, str) or not model.strip() or "\0" in model
+    ):
+        raise RuntimeError(f"review state has invalid model_argument: {path}")
+
+    budget = payload["max_budget_usd"]
+    if budget is not None:
+        invalid_budget = isinstance(budget, bool) or not isinstance(
+            budget, (int, float)
+        )
+        if isinstance(budget, float):
+            invalid_budget = (
+                not math.isfinite(budget) or budget <= 0 or budget > 100
+            )
+        elif isinstance(budget, int) and not isinstance(budget, bool):
+            invalid_budget = budget <= 0 or budget > 100
+        if invalid_budget:
+            raise RuntimeError(f"review state has invalid max_budget_usd: {path}")
+
+    started_at = payload["started_at"]
+    try:
+        if not isinstance(started_at, str) or not started_at.strip():
+            raise ValueError("started_at is not a non-empty string")
+        parsed_started_at = datetime.fromisoformat(started_at)
+        if parsed_started_at.tzinfo is None or parsed_started_at.utcoffset() is None:
+            raise ValueError("started_at has no timezone")
+    except ValueError as exc:
+        raise RuntimeError(f"review state has invalid started_at: {path}") from exc
     return payload
 
 
