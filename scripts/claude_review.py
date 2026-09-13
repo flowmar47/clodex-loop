@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Claude Code as a bounded adversarial reviewer from a Codex workflow."""
+"""Run Claude Code as a bounded adversarial reviewer for a different-lineage primary operator."""
 
 from __future__ import annotations
 
@@ -591,7 +591,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     start = subparsers.add_parser("start", help="start a fresh review session")
     add_common_review_args(start)
-    start.add_argument("--model", help="optional explicit Claude model")
+    start.add_argument(
+        "--model",
+        help="optional exact reviewer model ID; omit to use the CLI's current default",
+    )
     start.add_argument("--max-budget-usd", type=float)
     start.add_argument(
         "--repo-read",

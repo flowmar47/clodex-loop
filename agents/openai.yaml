@@ -1,4 +1,4 @@
 interface:
   display_name: "Clodex Loop"
-  short_description: "Codex builds; Claude adversarially reviews"
-  default_prompt: "Use $clodex-loop to plan and implement this with Claude providing bounded adversarial reviews."
+  short_description: "Current agent builds; independent Claude Code review (CLI default, unpinned)"
+  default_prompt: "Use $clodex-loop to plan and implement this with an independent Claude Code reviewer at the CLI default."

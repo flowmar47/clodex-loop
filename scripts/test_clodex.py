@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -125,6 +126,7 @@ class ReviewContractTests(unittest.TestCase):
         )
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertNotIn("--allowedTools", command)
+        self.assertNotIn("--model", command)
 
     def test_repo_read_requests_only_read_glob_and_grep(self) -> None:
         command = claude_review.build_command(
@@ -187,6 +189,108 @@ class ReviewContractTests(unittest.TestCase):
             self.assertIsNone(summary["verdict"])
             self.assertEqual(summary["reported_verdict"], "VERDICT: APPROVED")
             self.assertIn("PARTIAL OUTPUT", output.read_text(encoding="utf-8"))
+
+
+class RoleResolutionTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parent.parent
+    PINNED_SKU = re.compile(
+        r"\b(?:gpt-[0-9]|o[1-9]|claude[- ]?(?:opus|sonnet|haiku)[- ]?[0-9]"
+        r"|gemini[- ]?[0-9]|grok[- ]?[0-9])",
+        re.IGNORECASE,
+    )
+
+    def write_plan_repo(self, tmp: str) -> Path:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        (repo / "PLAN.md").write_text("# Plan\n\nShip it.\n", encoding="utf-8")
+        return repo
+
+    def build_plan_packet(self, repo: Path, extra: list[str] | None = None) -> str:
+        output = repo / "packet.md"
+        argv = [
+            "plan",
+            "--repo",
+            str(repo),
+            "--plan",
+            "PLAN.md",
+            "--output",
+            str(output),
+        ]
+        if extra:
+            argv.extend(extra)
+        with mock.patch.object(sys, "stdout", new_callable=io.StringIO):
+            self.assertEqual(build_review_packet.main(argv), 0)
+        return output.read_text(encoding="utf-8")
+
+    def test_packet_records_resolved_roles_instead_of_vendor_pairing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.write_plan_repo(tmp)
+            packet = self.build_plan_packet(
+                repo,
+                [
+                    "--primary",
+                    "Cursor host-default",
+                    "--reviewer",
+                    "Claude Code CLI default (unpinned)",
+                ],
+            )
+        self.assertIn("Primary operator: `Cursor host-default`", packet)
+        self.assertIn(
+            "Independent reviewer: `Claude Code CLI default (unpinned)`", packet
+        )
+        self.assertNotIn("Codex/ChatGPT", packet)
+        self.assertNotIn("Claude is reviewer only", packet)
+
+    def test_default_packet_stays_unpinned_and_host_agnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.write_plan_repo(tmp)
+            packet = self.build_plan_packet(repo)
+        self.assertIn("Primary operator: `current host agent`", packet)
+        self.assertIn(
+            "Independent reviewer: `Claude Code CLI default (unpinned)`", packet
+        )
+        self.assertNotIn("Codex/ChatGPT", packet)
+        self.assertIsNone(self.PINNED_SKU.search(packet))
+
+    def test_review_contracts_do_not_name_a_vendor_as_author(self) -> None:
+        for name in ("plan-review-prompt.md", "code-review-prompt.md"):
+            text = (self.ROOT / "references" / name).read_text(encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertNotIn("OpenAI Codex or ChatGPT", text)
+                self.assertIn("different lineage", text.lower())
+                self.assertIsNone(self.PINNED_SKU.search(text))
+
+    def test_skill_does_not_pin_frontier_skus(self) -> None:
+        skill = (self.ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIsNone(self.PINNED_SKU.search(skill))
+        self.assertIn("CLI default, unpinned", skill)
+        self.assertIn("current host agent", skill.lower())
+        self.assertIn("lineage", skill.lower())
+        self.assertNotRegex(
+            skill,
+            r"Codex or ChatGPT performs recon",
+        )
+
+    def test_blank_role_labels_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.write_plan_repo(tmp)
+            argv = [
+                "plan",
+                "--repo",
+                str(repo),
+                "--plan",
+                "PLAN.md",
+                "--output",
+                str(repo / "packet.md"),
+                "--primary",
+                "   ",
+            ]
+            with (
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                build_review_packet.parse_args(argv)
+            self.assertEqual(raised.exception.code, 2)
 
 
 class PacketSafetyTests(unittest.TestCase):

@@ -24,5 +24,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Clodex Loop reverses the operating roles of the MIT-licensed claudex-loop
-workflow at https://github.com/chaseai-yt/claudex-loop: Codex or ChatGPT is the
-primary planner and implementer; Claude is the adversarial reviewer.
+workflow at https://github.com/chaseai-yt/claudex-loop: the current host agent
+is the primary planner and implementer; Claude Code is the shipped independent
+reviewer adapter.
