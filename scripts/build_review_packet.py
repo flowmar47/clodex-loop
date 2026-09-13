@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a bounded, redacted packet for an external Claude review."""
+"""Build a bounded, redacted packet for an independent external review."""
 
 from __future__ import annotations
 
@@ -16,6 +16,9 @@ from typing import Sequence
 
 
 DEFAULT_MAX_BYTES = 9_000_000
+DEFAULT_PRIMARY = "current host agent"
+DEFAULT_REVIEWER = "Claude Code CLI default (unpinned)"
+MAX_ROLE_CHARS = 200
 MAX_UNTRACKED_FILE_BYTES = 256_000
 SKILL_DIR = Path(__file__).resolve().parent.parent
 PROMPTS = {
@@ -94,6 +97,15 @@ def is_sensitive_path(path: Path) -> bool:
         or path.suffix.lower() in SENSITIVE_SUFFIXES
         or any(part.lower() in {".ssh", ".gnupg", "secrets"} for part in path.parts)
     )
+
+
+def normalize_role(value: str, *, label: str) -> str:
+    if "\0" in value:
+        raise RuntimeError(f"{label} contains a null byte")
+    role = " ".join(value.split())
+    if not role or len(role) > MAX_ROLE_CHARS:
+        raise RuntimeError(f"{label} must be 1-{MAX_ROLE_CHARS} visible characters")
+    return role
 
 
 def redact(text: str) -> RedactedText:
@@ -230,7 +242,8 @@ def build_packet(args: argparse.Namespace) -> tuple[str, int, list[str]]:
                     f"- Round: `{args.round}`",
                     f"- Repository: `{repo}`",
                     f"- Plan: `{plan_path.relative_to(repo)}`",
-                    "- The primary operator is Codex/ChatGPT; Claude is reviewer only.",
+                    f"- Primary operator: `{args.primary}`",
+                    f"- Independent reviewer: `{args.reviewer}` (advisory only; does not implement)",
                 )
             ),
         ),
@@ -318,13 +331,23 @@ def build_packet(args: argparse.Namespace) -> tuple[str, int, list[str]]:
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build a bounded and redacted plan/code review packet for Claude."
+        description="Build a bounded and redacted plan/code review packet for an independent reviewer."
     )
     parser.add_argument("mode", choices=("plan", "code"))
     parser.add_argument("--repo", default=".", help="target repository root")
     parser.add_argument("--plan", default="PLAN.md", help="plan path inside repo")
     parser.add_argument("--round", type=int, default=1)
     parser.add_argument("--output", required=True, help="new packet path")
+    parser.add_argument(
+        "--primary",
+        default=DEFAULT_PRIMARY,
+        help="resolved primary-operator identity from the current host",
+    )
+    parser.add_argument(
+        "--reviewer",
+        default=DEFAULT_REVIEWER,
+        help="resolved independent-reviewer identity; default is the unpinned CLI model",
+    )
     parser.add_argument(
         "--include",
         action="append",
@@ -342,6 +365,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error(f"--max-bytes must be between 100000 and {DEFAULT_MAX_BYTES}")
     if args.mode == "plan" and (args.base or args.proof_file):
         parser.error("--base and --proof-file apply only to code mode")
+    try:
+        args.primary = normalize_role(args.primary, label="--primary")
+        args.reviewer = normalize_role(args.reviewer, label="--reviewer")
+    except RuntimeError as exc:
+        parser.error(str(exc))
     return args
 
 
