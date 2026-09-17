@@ -1,14 +1,16 @@
 # Clodex Loop
 
-The current agent builds. An independent reviewer from a different lineage attacks the plan and the diff.
+The current agent builds. An independent reviewer from a different provider lineage attacks the plan and the diff.
 
-Clodex Loop is a bounded workflow for consequential software changes. The current host agent remains the primary operator: it researches, resolves decisions, writes the plan, implements, and runs proof. Claude Code receives bounded review packets and acts only as an independent adversarial reviewer, using its CLI default model unless the user names an exact ID.
+Clodex Loop is a bounded workflow for consequential software changes. The current host agent remains the primary operator: it researches, resolves decisions, writes the plan, implements, and runs proof. Claude Code receives bounded review packets and acts only as an independent adversarial reviewer, using its CLI default model unless the user names an exact ID the live CLI can serve.
 
 The core invariant is simple:
 
 > The model that creates an artifact does not grade it.
 
-Roles are resolved at runtime, so new frontier releases do not require editing this skill. Do not pin remembered product SKUs. If the current agent is already Anthropic-lineage, stop: the shipped reviewer adapter cannot provide independent review.
+Roles are resolved at runtime, so new frontier releases do not require editing this skill. Do not pin remembered product SKUs, and do not classify lineage by matching a model ID against remembered product names.
+
+Skip this loop for local or cheap-to-reverse edits. If the host product is Claude Code, or the host-exposed provider is Anthropic, stop: the shipped reviewer cannot independently grade that work. Point to model-loop only when another rival CLI is actually installed. If the provider is unknown, ask once — do not guess.
 
 This project reverses the roles in Chase AI's MIT-licensed [claudex-loop](https://github.com/chaseai-yt/claudex-loop). The upstream notices are preserved in [LICENSE](LICENSE).
 
