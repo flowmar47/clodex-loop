@@ -271,6 +271,21 @@ class RoleResolutionTests(unittest.TestCase):
             r"Codex or ChatGPT performs recon",
         )
 
+    def test_skill_classifies_lineage_without_sku_lists(self) -> None:
+        skill = (self.ROOT / "SKILL.md").read_text(encoding="utf-8")
+        readme = (self.ROOT / "README.md").read_text(encoding="utf-8")
+        for name, text in (("SKILL.md", skill), ("README.md", readme)):
+            with self.subTest(name=name):
+                self.assertIsNone(self.PINNED_SKU.search(text))
+                self.assertNotRegex(
+                    text,
+                    r"(?i)match(?:ing)? (?:an? )?(?:id|name|sku).*(?:opus|sonnet|haiku)",
+                )
+                self.assertIn("provider", text.lower())
+        self.assertIn("Skip unless this loop earns its keep", skill)
+        self.assertIn("remembered product names", skill.lower())
+        self.assertIn("model-loop", skill)
+
     def test_blank_role_labels_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self.write_plan_repo(tmp)

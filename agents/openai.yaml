@@ -1,4 +1,4 @@
 interface:
   display_name: "Clodex Loop"
-  short_description: "Current agent builds; independent Claude Code review (CLI default, unpinned)"
-  default_prompt: "Use $clodex-loop to plan and implement this with an independent Claude Code reviewer at the CLI default."
+  short_description: "Current agent builds; independent Claude Code review at the CLI default"
+  default_prompt: "Use $clodex-loop only if this change is high-stakes and the host is not Anthropic-provided; independent reviewer at the CLI default."
