@@ -12,10 +12,13 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 
 DEFAULT_MAX_BYTES = 9_000_000
+DEFAULT_UNIFIED_CONTEXT = 80
+MIN_UNIFIED_CONTEXT = 3
+MAX_UNIFIED_CONTEXT = 200
 DEFAULT_PRIMARY = "current host agent"
 DEFAULT_REVIEWER = "Claude Code CLI default (unpinned)"
 MAX_ROLE_CHARS = 200
@@ -27,11 +30,17 @@ PROMPTS = {
 }
 SENSITIVE_NAMES = {
     ".env",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
     "credentials.json",
     "secrets.json",
     "service-account.json",
     "id_rsa",
     "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+    "kubeconfig",
 }
 SENSITIVE_SUFFIXES = {
     ".key",
@@ -39,8 +48,21 @@ SENSITIVE_SUFFIXES = {
     ".p12",
     ".pfx",
     ".mobileprovision",
+    ".tfvars",
+    ".jks",
+    ".keystore",
 }
-SECRET_PATTERNS = (
+
+
+def _replace_quoted_assignment(match: re.Match[str]) -> str:
+    return f'{match.group(1)}{match.group(2)}"<REDACTED_SECRET>"'
+
+
+def _replace_env_assignment(match: re.Match[str]) -> str:
+    return f"{match.group(1)}{match.group(2)}{match.group(3)}<REDACTED_SECRET>"
+
+
+SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]], ...] = (
     (
         re.compile(
             r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?"
@@ -59,13 +81,37 @@ SECRET_PATTERNS = (
         "<REDACTED_GITHUB_TOKEN>",
     ),
     (re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}\b"), "<REDACTED_API_KEY>"),
+    (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*"), "Bearer <REDACTED_TOKEN>"),
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "<REDACTED_SLACK_TOKEN>"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "<REDACTED_GOOGLE_API_KEY>"),
+    (
+        re.compile(
+            r"\b((?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp)://)"
+            r"[^:\s/]+:[^@\s]+@"
+        ),
+        r"\1<REDACTED_CREDENTIALS>@",
+    ),
     (
         re.compile(
             r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|"
             r"password|secret)\b(\s*[:=]\s*)"
             r"([\"'])(?!<|\$|\{)[^\"'\r\n]{8,}\3"
         ),
-        None,
+        _replace_quoted_assignment,
+    ),
+    (
+        re.compile(
+            r"(?im)^([+-]?[ \t]*(?:export[ \t]+)?)"
+            r"((?:[A-Za-z0-9_]*_)?(?:api[_-]?(?:key|secret|token)|access[_-]?token|"
+            r"auth[_-]?token|refresh[_-]?token|bearer[_-]?token|bot[_-]?token|"
+            r"client[_-]?secret|secret[_-]?(?:access[_-]?)?key|private[_-]?key|"
+            r"signing[_-]?key|encryption[_-]?key|webhook[_-]?secret|"
+            r"password|passwd|secret|token))"
+            r"([ \t]*=[ \t]*)"
+            r"(?!<|\$|\{|\"|')(?![a-z_]+\.[a-z_]+(?:[,\s]|$))"
+            r"[^\s\"'#(),;\r\n]{8,}(?=$|\s|#)"
+        ),
+        _replace_env_assignment,
     ),
 )
 
@@ -112,13 +158,7 @@ def redact(text: str) -> RedactedText:
     count = 0
     current = text
     for pattern, replacement in SECRET_PATTERNS:
-        if replacement is None:
-            def replace_assignment(match: re.Match[str]) -> str:
-                return f"{match.group(1)}{match.group(2)}\"<REDACTED_SECRET>\""
-
-            current, matches = pattern.subn(replace_assignment, current)
-        else:
-            current, matches = pattern.subn(replacement, current)
+        current, matches = pattern.subn(replacement, current)
         count += matches
     return RedactedText(current, count)
 
@@ -173,18 +213,35 @@ def include_repo_files(repo: Path, values: Sequence[str]) -> tuple[str, int]:
     return "\n".join(chunks), redactions
 
 
-def collect_untracked(repo: Path) -> tuple[str, int, list[str]]:
-    output = run_git(repo, ("ls-files", "--others", "--exclude-standard", "-z"))
+def exclude_pathspecs(excludes: Sequence[str]) -> tuple[str, ...]:
+    if not excludes:
+        return ()
+    return (".", *(f":(exclude){pattern}" for pattern in excludes))
+
+
+def collect_untracked(repo: Path, excludes: Sequence[str] = ()) -> tuple[str, int, list[str]]:
+    all_output = run_git(repo, ("ls-files", "--others", "--exclude-standard", "-z"))
+    all_files = [raw for raw in all_output.split("\0") if raw]
+    if excludes:
+        included_output = run_git(
+            repo,
+            ("ls-files", "--others", "--exclude-standard", "-z", "--", *exclude_pathspecs(excludes)),
+        )
+        included_set = {raw for raw in included_output.split("\0") if raw}
+    else:
+        included_set = set(all_files)
+
     chunks: list[str] = []
     redactions = 0
     omitted: list[str] = []
-    for raw in output.split("\0"):
-        if not raw:
-            continue
+    for raw in all_files:
         relative = Path(raw)
         path = repo / relative
         if is_sensitive_path(relative):
             omitted.append(f"{relative} (sensitive-looking path)")
+            continue
+        if raw not in included_set:
+            omitted.append(f"{relative} (excluded by --exclude)")
             continue
         if path.is_symlink() or not path.is_file():
             omitted.append(f"{relative} (symlink or non-regular file)")
@@ -269,18 +326,28 @@ def build_packet(args: argparse.Namespace) -> tuple[str, int, list[str]]:
         resolved_base = run_git(repo, ("rev-parse", "--verify", f"{args.base}^{{commit}}"))
         base_commit = resolved_base.strip()
         changed_names = run_git(repo, ("diff", "--name-only", "-z", base_commit, "--"))
+        all_changed = [name for name in changed_names.split("\0") if name]
         sensitive_changes = [
             name
-            for name in changed_names.split("\0")
-            if name and is_sensitive_path(Path(name))
+            for name in all_changed
+            if is_sensitive_path(Path(name))
         ]
         if sensitive_changes:
             raise RuntimeError(
                 "refusing code packet with sensitive-looking changed paths: "
                 + ", ".join(sensitive_changes)
             )
+        pathspecs = exclude_pathspecs(args.exclude)
+        if pathspecs:
+            included_names = run_git(
+                repo, ("diff", "--name-only", "-z", base_commit, "--", *pathspecs)
+            )
+            included_set = {name for name in included_names.split("\0") if name}
+            for name in all_changed:
+                if name not in included_set:
+                    omissions.append(f"{name} (excluded by --exclude)")
         status = run_git(repo, ("status", "--short"))
-        stat = run_git(repo, ("diff", "--stat", base_commit, "--"), timeout=120)
+        stat = run_git(repo, ("diff", "--stat", base_commit, "--", *pathspecs), timeout=120)
         diff = run_git(
             repo,
             (
@@ -288,15 +355,18 @@ def build_packet(args: argparse.Namespace) -> tuple[str, int, list[str]]:
                 "--no-ext-diff",
                 "--find-renames",
                 "--find-copies",
-                "--unified=80",
+                f"--unified={args.unified}",
                 base_commit,
                 "--",
+                *pathspecs,
             ),
             timeout=180,
         )
         clean_diff = redact(diff)
         redactions += clean_diff.count
-        untracked, untracked_redactions, untracked_omitted = collect_untracked(repo)
+        untracked, untracked_redactions, untracked_omitted = collect_untracked(
+            repo, excludes=args.exclude
+        )
         redactions += untracked_redactions
         omissions.extend(untracked_omitted)
         parts.extend(
@@ -357,14 +427,35 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--notes", help="operator disposition/notes file")
     parser.add_argument("--base", help="base commit/ref; required for code mode")
     parser.add_argument("--proof-file", help="captured proof-test output")
+    parser.add_argument(
+        "--unified",
+        type=int,
+        default=None,
+        help=f"diff context lines for code mode ({MIN_UNIFIED_CONTEXT}..{MAX_UNIFIED_CONTEXT}; default {DEFAULT_UNIFIED_CONTEXT})",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="glob pathspec to exclude from code-mode diff and untracked files; repeat as needed",
+    )
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     args = parser.parse_args(argv)
     if args.round < 1:
         parser.error("--round must be positive")
     if args.max_bytes < 100_000 or args.max_bytes > DEFAULT_MAX_BYTES:
         parser.error(f"--max-bytes must be between 100000 and {DEFAULT_MAX_BYTES}")
-    if args.mode == "plan" and (args.base or args.proof_file):
-        parser.error("--base and --proof-file apply only to code mode")
+    if args.mode == "plan" and (
+        args.base or args.proof_file or args.exclude or args.unified is not None
+    ):
+        parser.error("--base, --proof-file, --unified, and --exclude apply only to code mode")
+    if args.unified is None:
+        args.unified = DEFAULT_UNIFIED_CONTEXT
+    elif args.unified < MIN_UNIFIED_CONTEXT or args.unified > MAX_UNIFIED_CONTEXT:
+        parser.error(f"--unified must be between {MIN_UNIFIED_CONTEXT} and {MAX_UNIFIED_CONTEXT}")
+    for pattern in args.exclude:
+        if not pattern.strip() or "\0" in pattern or pattern.startswith(":"):
+            parser.error(f"invalid --exclude glob: {pattern!r}")
     try:
         args.primary = normalize_role(args.primary, label="--primary")
         args.reviewer = normalize_role(args.reviewer, label="--reviewer")

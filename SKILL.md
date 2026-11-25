@@ -44,7 +44,7 @@ Resolve paths relative to this skill directory and run once:
 python3 scripts/claude_review.py doctor
 ```
 
-Stop if Claude Code is missing, unauthenticated, or lacks the required safety flags. Do not install, log in, change models, or mutate global Claude settings without the user's request.
+Stop if `ok` is `false` (including `same_product_host: true` when `CLAUDECODE` / `CLAUDE_CODE` is set, missing CLI, unauthenticated state, or missing required safety flags). `doctor` also reports `effort_values` parsed dynamically from the live CLI's `--help`. Do not install, log in, change models, or mutate global Claude settings without the user's request.
 
 Use these defaults unless the user overrides them:
 
@@ -140,6 +140,12 @@ python3 scripts/claude_review.py start \
   --state <RUN_DIR>/plan-session.json
 ```
 
+Pass `--effort <level>` on `start` only if the user requests a specific effort level (validated against live `claude --help` when enumerated and persisted for `resume`). Inspect an existing session summary at any time with:
+
+```bash
+python3 scripts/claude_review.py status --state <RUN_DIR>/plan-session.json
+```
+
 The runner uses `--safe-mode`, disables slash commands, Chrome, and MCP, requests an empty tool set with `--tools ""` by default, enforces a timeout, captures the exact session UUID, and refuses to overwrite evidence. `doctor` records the installed CLI version and verifies required-flag support; rerun it after CLI upgrades. Never replace the runner with an unrestricted `claude -p` call. Never pass `--model` from memory.
 
 Append reviewer output verbatim to `LOG_FILE`. For every finding, record the primary operator's disposition:
@@ -175,7 +181,7 @@ After sign-off:
 3. Implement the locked plan with the primary operator's normal tools. Do not expand scope from reviewer suggestions.
 4. Run the plan's proof commands and capture real output in the run directory. Inspect the complete diff yourself; tests do not replace review.
 
-Read `references/code-review-prompt.md`, then build a code packet:
+Read `references/code-review-prompt.md`, then build a code packet (optionally pass `--unified <N>` in `3..200`, default `80`, and repeatable `--exclude <glob>` to omit noisy generated/lockfile paths, which are recorded in `Omitted from packet`):
 
 ```bash
 python3 scripts/build_review_packet.py code \

@@ -44,22 +44,34 @@ For a shared installation across supported agent harnesses, use the skills insta
 npx skills add https://github.com/flowmar47/clodex-loop --global --all
 ```
 
-For a manual installation, clone the repository into the current agent's skill directory. A Codex example:
+Or use the included host-agnostic installer script (supports Codex, Cursor, Gemini CLI, Antigravity/AGY, GitHub Copilot, Pi, OpenCode, and `~/.agents/skills`; explicitly skips `~/.claude/skills` because Claude Code cannot use Claude Code as an independent reviewer):
 
 ```bash
-git clone https://github.com/flowmar47/clodex-loop.git ~/.codex/skills/clodex-loop
+git clone https://github.com/flowmar47/clodex-loop.git ~/.agents/skills/clodex-loop
+cd ~/.agents/skills/clodex-loop
+./install.sh --list       # inspect supported host directories and skip notice
+./install.sh              # symlink into detected host skill directories
+./install.sh --copy       # copy files instead of symlinking
+./install.sh --uninstall  # remove installed entries
 ```
+
+For a single-host manual installation, clone the repository into the current agent's skill directory (for example `~/.codex/skills/clodex-loop`).
 
 If the current task does not discover a newly installed skill, start a new task and invoke the skill there.
 
 Before first use, verify the local Claude Code integration:
 
 ```bash
-cd ~/.codex/skills/clodex-loop
 python3 scripts/claude_review.py doctor
 ```
 
-The doctor reports a sanitized CLI basename plus authentication-method, subscription, and required-flag status. It does not print credentials or the resolved executable path. The reviewer model stays at the CLI default unless the user overrides it.
+The doctor reports a sanitized CLI basename, `same_product_host` status (`CLAUDECODE` / `CLAUDE_CODE`), live `effort_values` parsed from `claude --help`, authentication-method, subscription, and required-flag status. It does not print credentials or the resolved executable path. The reviewer model stays at the CLI default unless the user overrides it.
+
+Inspect an existing review-session state without exposing budget internals:
+
+```bash
+python3 scripts/claude_review.py status --state <RUN_DIR>/plan-session.json
+```
 
 Run the local regression suite without invoking the reviewer:
 
@@ -83,7 +95,8 @@ Packet-only review is the default:
 
 - Packet-only commands request an empty Claude tool set with `--tools ""` under safe mode; `doctor` records the installed CLI version and verifies that the required flag is present, so upgrades can be rechecked.
 - Chrome, MCP, slash commands, and project customizations are disabled by the runner.
-- Plan and code packets are capped below Claude Code's stdin limit.
+- Plan and code packets are capped below Claude Code's stdin limit. In `code` mode, `--unified <N>` (`3`–`200`, default `80`) tunes diff context lines and repeatable `--exclude <glob>` omits noisy generated or lockfile paths (recorded in `Omitted from packet`).
+- `claude_review.py start` supports optional `--effort <level>` (validated against live `claude --help` when enumerated and persisted for `resume`) alongside `status --state <path>` for sanitized session inspection.
 - The plan and files passed with `--include` must remain inside the target repository. Direct symlink inputs are rejected for plan, include, notes, proof, packet, output, and state paths; notes and proof also reject sensitive-looking paths.
 - Common private-key and credential forms are redacted.
 - Session UUIDs are captured exactly; a phase resumes only its recorded session.
@@ -99,11 +112,12 @@ An optional repository-read mode requests only `Read`, `Glob`, and `Grep` throug
 
 ```text
 SKILL.md                              Workflow and safety contract
+install.sh                            Host-agnostic installer (skips ~/.claude/skills)
 agents/openai.yaml                    Codex skill metadata
 references/plan-review-prompt.md      Independent plan-review contract
 references/code-review-prompt.md      Independent code-review contract
 scripts/build_review_packet.py        Bounded packet builder and redactor
-scripts/claude_review.py              Claude Code doctor/session runner
+scripts/claude_review.py              Claude Code doctor/session/status runner
 scripts/test_clodex.py                Standard-library regression suite
 .github/workflows/test.yml            Push and pull-request regression check
 ```

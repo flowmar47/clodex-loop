@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,19 @@ REQUIRED_FLAGS = (
     "--session-id",
     "--strict-mcp-config",
     "--tools",
+)
+SAME_PRODUCT_NOTE = "Host is Claude Code; use model-loop with a non-Anthropic rival CLI"
+STATUS_FIELDS = (
+    "session_id",
+    "repo",
+    "rounds",
+    "repo_read",
+    "model_argument",
+    "effort_argument",
+    "started_at",
+    "last_review_at",
+    "last_packet_sha256",
+    "claude_version",
 )
 VERDICTS = {"VERDICT: APPROVED", "VERDICT: REVISE"}
 
@@ -187,18 +201,62 @@ def atomic_write_json(path: Path, payload: dict[str, Any], *, replace: bool) -> 
         raise
 
 
+def parse_effort_values(help_text: str) -> set[str] | None:
+    block_lines: list[str] = []
+    capturing = False
+    for line in help_text.splitlines():
+        if re.match(r"^\s*(?:-[A-Za-z0-9],\s*)?--effort\b", line):
+            capturing = True
+            block_lines.append(line)
+            continue
+        if capturing:
+            if (
+                not line.strip()
+                or re.match(r"^\s*--?[A-Za-z0-9]", line)
+                or not line.startswith((" ", "\t"))
+            ):
+                break
+            block_lines.append(line)
+    if not block_lines:
+        return None
+    block = " ".join(part.strip() for part in block_lines)
+    for match in re.finditer(r"\(([^()]+)\)", block):
+        inner = match.group(1).strip()
+        if inner.lower().startswith("choices:"):
+            inner = inner.split(":", 1)[1].strip()
+        elif ":" in inner or inner.lower().startswith("e.g."):
+            continue
+        raw_items = [item.strip().strip("\"'") for item in inner.split(",")]
+        if len(raw_items) >= 2 and all(
+            re.fullmatch(r"[A-Za-z0-9_-]+", item) for item in raw_items
+        ):
+            return set(raw_items)
+    return None
+
+
 def doctor() -> int:
+    same_product_host = bool(
+        os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE")
+    )
     try:
         executable = find_claude()
         version_result = run((executable, "--version"), timeout=20)
         help_result = run((executable, "--help"), timeout=20)
         auth_result = run((executable, "auth", "status", "--json"), timeout=20)
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+        error_payload: dict[str, Any] = {
+            "ok": False,
+            "error": str(exc),
+            "same_product_host": same_product_host,
+        }
+        if same_product_host:
+            error_payload["note"] = SAME_PRODUCT_NOTE
+        print(json.dumps(error_payload, sort_keys=True))
         return 1
 
     help_text = help_result.stdout + help_result.stderr
     missing_flags = [flag for flag in REQUIRED_FLAGS if flag not in help_text]
+    effort_values = sorted(parse_effort_values(help_text) or ())
     try:
         auth = json.loads(auth_result.stdout) if auth_result.stdout.strip() else {}
     except json.JSONDecodeError:
@@ -210,21 +268,22 @@ def doctor() -> int:
         and auth_result.returncode == 0
         and logged_in
         and not missing_flags
+        and not same_product_host
     )
-    print(
-        json.dumps(
-            {
-                "auth_method": auth.get("authMethod"),
-                "claude": Path(executable).name,
-                "logged_in": logged_in,
-                "missing_flags": missing_flags,
-                "ok": ok,
-                "subscription_type": auth.get("subscriptionType"),
-                "version": version_result.stdout.strip(),
-            },
-            sort_keys=True,
-        )
-    )
+    report: dict[str, Any] = {
+        "auth_method": auth.get("authMethod"),
+        "claude": Path(executable).name,
+        "effort_values": effort_values,
+        "logged_in": logged_in,
+        "missing_flags": missing_flags,
+        "ok": ok,
+        "same_product_host": same_product_host,
+        "subscription_type": auth.get("subscriptionType"),
+        "version": version_result.stdout.strip(),
+    }
+    if same_product_host:
+        report["note"] = SAME_PRODUCT_NOTE
+    print(json.dumps(report, sort_keys=True))
     return 0 if ok else 1
 
 
@@ -277,6 +336,12 @@ def load_state(path: Path) -> dict[str, Any]:
     ):
         raise RuntimeError(f"review state has invalid model_argument: {path}")
 
+    effort = payload.get("effort_argument")
+    if effort is not None and (
+        not isinstance(effort, str) or not effort.strip() or "\0" in effort
+    ):
+        raise RuntimeError(f"review state has invalid effort_argument: {path}")
+
     budget = payload["max_budget_usd"]
     if budget is not None:
         invalid_budget = isinstance(budget, bool) or not isinstance(
@@ -309,6 +374,7 @@ def make_state(
     packet_bytes: bytes,
     max_budget_usd: float | None,
     model: str | None,
+    effort: str | None = None,
     repo: Path,
     repo_read: bool,
     round_number: int,
@@ -318,6 +384,7 @@ def make_state(
     now = datetime.now(timezone.utc).isoformat()
     return {
         "claude_version": run((executable, "--version"), timeout=20).stdout.strip(),
+        "effort_argument": effort,
         "last_packet_sha256": hashlib.sha256(packet_bytes).hexdigest(),
         "last_review_at": now,
         "max_budget_usd": max_budget_usd,
@@ -344,6 +411,7 @@ def build_command(
     resume: bool,
     repo_read: bool,
     model: str | None,
+    effort: str | None = None,
     max_budget_usd: float | None,
 ) -> list[str]:
     command = [
@@ -368,6 +436,8 @@ def build_command(
         command.extend(("--session-id", session_id, "--name", f"clodex-{session_id[:8]}"))
     if model:
         command.extend(("--model", model))
+    if effort:
+        command.extend(("--effort", effort))
     if max_budget_usd is not None:
         command.extend(("--max-budget-usd", f"{max_budget_usd:.2f}"))
     command.append(
@@ -417,6 +487,7 @@ def review(args: argparse.Namespace, *, resume: bool) -> int:
                 raise RuntimeError("review state belongs to a different repository")
             repo_read = bool(state.get("repo_read", False))
             model = state.get("model_argument")
+            effort = state.get("effort_argument")
             max_budget_usd = state.get("max_budget_usd")
             round_number = int(state.get("rounds", 0)) + 1
         else:
@@ -425,6 +496,23 @@ def review(args: argparse.Namespace, *, resume: bool) -> int:
             session_id = str(uuid.uuid4())
             repo_read = bool(args.repo_read)
             model = args.model
+            effort = args.effort
+            if effort is not None:
+                if not effort.strip() or "\0" in effort:
+                    raise RuntimeError("invalid --effort value")
+                help_result = run((executable, "--help"), timeout=20)
+                if help_result.returncode != 0:
+                    raise RuntimeError(
+                        "failed to inspect claude --help for --effort validation"
+                    )
+                supported_efforts = parse_effort_values(
+                    help_result.stdout + help_result.stderr
+                )
+                if supported_efforts is not None and effort not in supported_efforts:
+                    raise RuntimeError(
+                        f"unsupported --effort {effort!r}; supported values: "
+                        + ", ".join(sorted(supported_efforts))
+                    )
             max_budget_usd = args.max_budget_usd
             round_number = 1
 
@@ -434,6 +522,7 @@ def review(args: argparse.Namespace, *, resume: bool) -> int:
             resume=resume,
             repo_read=repo_read,
             model=model,
+            effort=effort,
             max_budget_usd=max_budget_usd,
         )
         if args.dry_run:
@@ -441,6 +530,7 @@ def review(args: argparse.Namespace, *, resume: bool) -> int:
                 json.dumps(
                     {
                         "command": command[:-1] + ["<fixed review instruction>"],
+                        "effort": effort,
                         "packet_bytes": len(packet_bytes),
                         "packet_sha256": hashlib.sha256(packet_bytes).hexdigest(),
                         "repo": str(repo),
@@ -494,6 +584,7 @@ def review(args: argparse.Namespace, *, resume: bool) -> int:
                 packet_bytes=packet_bytes,
                 max_budget_usd=max_budget_usd,
                 model=model,
+                effort=effort,
                 repo=repo,
                 repo_read=repo_read,
                 round_number=round_number,
@@ -536,6 +627,7 @@ def review(args: argparse.Namespace, *, resume: bool) -> int:
             packet_bytes=packet_bytes,
             max_budget_usd=max_budget_usd,
             model=model,
+            effort=effort,
             repo=repo,
             repo_read=repo_read,
             round_number=round_number,
@@ -573,6 +665,20 @@ def review(args: argparse.Namespace, *, resume: bool) -> int:
         return 1
 
 
+def status(state_arg: str) -> int:
+    try:
+        state_path = resolve_path(state_arg, label="state", strict=True)
+        if not state_path.is_file():
+            raise RuntimeError(f"state is not a regular file: {state_path}")
+        state = load_state(state_path)
+    except (OSError, RuntimeError) as exc:
+        print(f"Claude review status failed: {exc}", file=sys.stderr)
+        return 1
+    summary = {field: state.get(field) for field in STATUS_FIELDS}
+    print(json.dumps(summary, sort_keys=True))
+    return 0
+
+
 def add_common_review_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repo", default=".", help="trusted target repository")
     parser.add_argument("--packet", required=True, help="bounded redacted review packet")
@@ -588,12 +694,22 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("doctor", help="verify CLI, auth, and safety flags")
+    status_parser = subparsers.add_parser(
+        "status", help="print a sanitized summary of an existing review-session state"
+    )
+    status_parser.add_argument(
+        "--state", required=True, help="review-session state path"
+    )
 
     start = subparsers.add_parser("start", help="start a fresh review session")
     add_common_review_args(start)
     start.add_argument(
         "--model",
         help="optional exact reviewer model ID; omit to use the CLI's current default",
+    )
+    start.add_argument(
+        "--effort",
+        help="optional effort level validated against live claude --help when enumerated",
     )
     start.add_argument("--max-budget-usd", type=float)
     start.add_argument(
@@ -608,9 +724,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     if args.command in {"start", "resume"}:
         if args.timeout_seconds < 30 or args.timeout_seconds > 3600:
             parser.error("--timeout-seconds must be between 30 and 3600")
-    if args.command == "start" and args.max_budget_usd is not None:
-        if args.max_budget_usd <= 0 or args.max_budget_usd > 100:
-            parser.error("--max-budget-usd must be greater than 0 and at most 100")
+    if args.command == "start":
+        if args.max_budget_usd is not None:
+            if args.max_budget_usd <= 0 or args.max_budget_usd > 100:
+                parser.error("--max-budget-usd must be greater than 0 and at most 100")
+        if args.effort is not None and (not args.effort.strip() or "\0" in args.effort):
+            parser.error("--effort must be a non-empty string without null bytes")
     return args
 
 
@@ -618,6 +737,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
     if args.command == "doctor":
         return doctor()
+    if args.command == "status":
+        return status(args.state)
     return review(args, resume=args.command == "resume")
 
 
