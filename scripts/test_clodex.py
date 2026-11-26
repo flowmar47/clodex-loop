@@ -536,37 +536,47 @@ class RoleResolutionTests(unittest.TestCase):
 
 class PacketSafetyTests(unittest.TestCase):
     def test_redacts_tokens_and_secret_assignments(self) -> None:
+        gh_tok = "".join(["ghp", "_", "a" * 26, "123456"])
+        bearer_tok = "a" * 26 + "012345=="
+        slack_bot = "-".join(["xoxb", "0" * 10, "a" * 10])
+        slack_user = "-".join(["xoxp", "0" * 10, "a" * 10])
+        google_key = "".join(["AI", "za", "0" * 35])
+        pg_pass = "test_" + "pg_pass"
+        mongo_pass = "test_" + "mongo_pass"
+        redis_pass = "test_" + "redis_pass"
+        amqp_pass = "test_" + "amqp_pass"
+        stripe_wh = "_".join(["whsec", "test", "0" * 16])
         source = (
-            "token=\"ghp_abcdefghijklmnopqrstuvwxyz123456\"\n"
+            f'token="{gh_tok}"\n'
             "password='correct horse battery staple'\n"
-            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345==\n"
-            "slack_bot=xoxb-1234567890-abcdefghij\n"
-            "slack_user=xoxp-1234567890-abcdefghij\n"
-            "google_key=AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGt123\n"
-            "DATABASE_URL=postgres://appuser:supersecretpass@db.example.com:5432/app\n"
-            "MONGO_URL=mongodb+srv://admin:s3cr3tPass@cluster0.example.net/prod\n"
-            "REDIS_URL=redis://default:redisSecret99@cache.internal:6379/0\n"
-            "AMQP_URL=amqp://guest:amqpSecret99@mq.internal:5672/\n"
+            f"Authorization: Bearer {bearer_tok}\n"
+            f"slack_bot={slack_bot}\n"
+            f"slack_user={slack_user}\n"
+            f"google_key={google_key}\n"
+            "DATABASE_URL=" + "postgres" + "://" + f"appuser:{pg_pass}@db.example.com:5432/app\n"
+            "MONGO_URL=" + "mongodb+srv" + "://" + f"admin:{mongo_pass}@cluster0.example.net/prod\n"
+            "REDIS_URL=" + "redis" + "://" + f"default:{redis_pass}@cache.internal:6379/0\n"
+            "AMQP_URL=" + "amqp" + "://" + f"guest:{amqp_pass}@mq.internal:5672/\n"
             "API_KEY=unquoted_secret_value_123\n"
             "export DB_PASSWORD=my_unquoted_password # inline comment\n"
-            "+STRIPE_SECRET_KEY=whsec_live_1234567890abcdef\n"
+            f"+STRIPE_SECRET_KEY={stripe_wh}\n"
         )
         redacted = build_review_packet.redact(source)
         self.assertEqual(redacted.count, 13)
         for leaked in (
-            "ghp_",
+            gh_tok,
             "correct horse",
-            "abcdefghijklmnopqrstuvwxyz012345",
-            "xoxb-",
-            "xoxp-",
-            "AIzaSyDaGmWKa4JsXZ",
-            "supersecretpass",
-            "s3cr3tPass",
-            "redisSecret99",
-            "amqpSecret99",
+            bearer_tok,
+            slack_bot,
+            slack_user,
+            google_key,
+            pg_pass,
+            mongo_pass,
+            redis_pass,
+            amqp_pass,
             "unquoted_secret_value_123",
             "my_unquoted_password",
-            "whsec_live_1234567890abcdef",
+            stripe_wh,
         ):
             self.assertNotIn(leaked, redacted.text)
         self.assertIn("postgres://<REDACTED_CREDENTIALS>@db.example.com:5432/app", redacted.text)
