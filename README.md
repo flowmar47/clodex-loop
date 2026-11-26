@@ -1,5 +1,7 @@
 # Clodex Loop
 
+[![CI](https://github.com/flowmar47/clodex-loop/actions/workflows/test.yml/badge.svg)](https://github.com/flowmar47/clodex-loop/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 The current agent builds. An independent reviewer from a different provider lineage attacks the plan and the diff.
 
 Clodex Loop is a bounded workflow for consequential software changes. The current host agent remains the primary operator: it researches, resolves decisions, writes the plan, implements, and runs proof. Claude Code receives bounded review packets and acts only as an independent adversarial reviewer, using its CLI default model unless the user names an exact ID the live CLI can serve.

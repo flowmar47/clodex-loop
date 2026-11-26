@@ -1,0 +1,9 @@
+Clodex Loop Attribution Notice
+
+Portions of the upstream project are adapted from skills by Matt Pocock,
+Copyright (c) 2026 Matt Pocock, used under the MIT License.
+
+Clodex Loop reverses the operating roles of the MIT-licensed claudex-loop
+workflow at https://github.com/chaseai-yt/claudex-loop (Copyright (c) 2026
+Chase AI): the current host agent is the primary planner and implementer;
+Claude Code is the shipped independent reviewer adapter.
